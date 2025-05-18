@@ -1,0 +1,16 @@
+# 가상환경
+venv/
+
+# Python 캐시 및 임시파일
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# VSCode 설정 (선택)
+.vscode/
+
+# OS별 불필요한 파일
+.DS_Store
+Thumbs.db
