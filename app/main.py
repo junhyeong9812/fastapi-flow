@@ -1,3 +1,10 @@
+"""
+애플리케이션 메인 파일 (FastAPI-Flow with Security)
+- 앱 초기화 및 설정
+- 라우터 등록
+- 미들웨어 등록
+- 보안 기능 추가
+"""
 import os
 import asyncio
 import logging
@@ -8,23 +15,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # 프로젝트 컴포넌트 임포트
 from app.middleware.logging import logging_middleware
+from app.middleware.security import security_middleware, rate_limit_middleware, xss_protection_middleware
 from app.router.hello import router as hello_router
+from app.router.auth import router as auth_router
+from app.router.protected import router as protected_router
+from app.router.security_test import router as security_test_router
 from app.exception.global_handler import register_exception_handlers
 from app.dependency.auth import log_request
-
-"""
-✅ FastAPI 애플리케이션 엔트리포인트
-- Spring의 DispatcherServlet과 대응되는 개념
-- 애플리케이션 설정, 미들웨어 등록, 라우터 관리 담당
-- 요청 처리의 출발점
-
-🔍 주요 기능:
-- 라이프사이클 이벤트 관리 (시작 시/종료 시 처리)
-- 미들웨어 등록 (Filter 대응)
-- 라우터 등록 (Controller 대응)
-- 전역 예외 핸들러 등록 (@ControllerAdvice 대응)
-- ASGI 서버 실행 (Embedded Tomcat 대응)
-"""
+from app.config.redis import RedisClient
+from app.config.settings import get_settings
 
 # 로깅 설정
 logging.basicConfig(
@@ -34,81 +33,88 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 애플리케이션 시작/종료 시 실행할 코드 (Spring의 @PostConstruct, @PreDestroy와 유사)
+# 설정 가져오기
+settings = get_settings()
+
+# 애플리케이션 시작/종료 시 실행할 코드
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     애플리케이션 라이프사이클 관리
-    - Spring의 @PostConstruct, @PreDestroy와 유사한 역할
-    - 시작 시점에 리소스 초기화 (DB 연결, 캐시 등)
+    - 시작 시점에 리소스 초기화 (Redis 연결 등)
     - 종료 시점에 리소스 정리 (연결 종료 등)
     """
-    # 애플리케이션 시작 시 실행 (Spring의 @PostConstruct와 유사)
+    # 애플리케이션 시작 시 실행
     logger.info("🚀 애플리케이션 시작 - 리소스 초기화 중...")
     
-    # 리소스 초기화 예시 (DB 연결 등)
-    # db = await initialize_db_connection()
-    # app.state.db = db
+    # Redis 초기화
+    try:
+        await RedisClient.initialize()
+        logger.info("✅ Redis 연결 초기화 완료")
+    except Exception as e:
+        logger.warning(f"⚠️ Redis 연결 실패 (애플리케이션은 계속 실행됩니다): {str(e)}")
+        logger.warning("⚠️ 리프레시 토큰 기능이 제한될 수 있습니다.")
     
-    # Redis 연결 예시
-    # redis = await initialize_redis_connection()
-    # app.state.redis = redis
-    
-    # 백그라운드 작업 시작 예시
-    # background_task = asyncio.create_task(background_job())
-    # app.state.background_task = background_task
+    # 다른 리소스 초기화 (DB 연결 등)
+    # ...
     
     logger.info("✅ 애플리케이션 초기화 완료")
     
     # FastAPI 애플리케이션 실행
     yield
     
-    # 애플리케이션 종료 시 실행 (Spring의 @PreDestroy와 유사)
+    # 애플리케이션 종료 시 실행
     logger.info("🛑 애플리케이션 종료 - 리소스 정리 중...")
     
-    # 리소스 정리 예시
-    # await app.state.db.close()
+    # Redis 연결 종료
+    try:
+        await RedisClient.close()
+        logger.info("✅ Redis 연결 정리 완료")
+    except Exception as e:
+        logger.error(f"❌ Redis 연결 종료 중 오류: {str(e)}")
     
-    # Redis 연결 종료 예시
-    # await app.state.redis.close()
-    
-    # 백그라운드 작업 취소 예시
-    # app.state.background_task.cancel()
-    # try:
-    #     await app.state.background_task
-    # except asyncio.CancelledError:
-    #     pass
+    # 다른 리소스 정리
+    # ...
     
     logger.info("👋 애플리케이션 정상 종료")
 
 
-# FastAPI 앱 생성 (라이프사이클 관리자 설정)
+# FastAPI 앱 생성
 app = FastAPI(
-    title="FastAPI-Flow",
-    description="Spring MVC 패턴을 FastAPI로 구현한 학습용 프로젝트",
-    version="0.1.0",
+    title=settings.APP_NAME,
+    description=settings.DESCRIPTION,
+    version=settings.VERSION,
     lifespan=lifespan,
     # 전역 의존성 설정 예시 (모든 엔드포인트에 적용)
     # dependencies=[Depends(log_request)]
 )
 
-# CORS 미들웨어 등록 (Spring의 CorsFilter와 유사)
+# CORS 미들웨어 등록
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 실제 프로덕션에서는 구체적인 오리진 지정 권장
+    allow_origins=settings.security.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=settings.security.CORS_METHODS,
+    allow_headers=settings.security.CORS_HEADERS,
 )
 
-# 커스텀 로깅 미들웨어 등록 (Spring의 Filter와 유사)
-# 미들웨어는 마지막에 추가한 것이 가장 먼저 실행됨 (Spring과 반대)
+# 보안 미들웨어 등록
+app.middleware("http")(security_middleware)
+app.middleware("http")(xss_protection_middleware)
+app.middleware("http")(rate_limit_middleware)
+
+# 커스텀 로깅 미들웨어 등록
 app.middleware("http")(logging_middleware)
 
-# 라우터 등록 (Spring의 @Controller와 유사)
+# 기존 라우터 등록
 app.include_router(hello_router)
 
-# 글로벌 예외 핸들러 등록 (Spring의 @ControllerAdvice와 유사)
+# 새로운 보안 관련 라우터 등록
+app.include_router(auth_router)
+app.include_router(protected_router)
+app.include_router(security_test_router)
+
+# 글로벌 예외 핸들러 등록
 register_exception_handlers(app)
 
 # 루트 엔드포인트
@@ -119,28 +125,44 @@ async def root():
     - 애플리케이션 기본 정보 반환
     """
     return {
-        "app": "FastAPI-Flow",
-        "description": "Spring MVC 패턴을 FastAPI로 구현한 학습용 프로젝트",
+        "app": settings.APP_NAME,
+        "description": settings.DESCRIPTION,
+        "version": settings.VERSION,
+        "docs_url": "/docs",
+        "redoc_url": "/redoc",
+        "environment": settings.ENV,
         "endpoints": [
+            # 기존 API
             {
                 "path": "/api/hello",
                 "description": "기본 Hello 엔드포인트"
             },
+            # 보안 테스트 API
             {
-                "path": "/api/hello/{name}",
-                "description": "이름을 받는 Hello 엔드포인트"
+                "path": "/api/security-test/public",
+                "description": "공개 보안 테스트 엔드포인트"
             },
             {
-                "path": "/api/hello-query?name=value",
-                "description": "쿼리 매개변수를 받는 Hello 엔드포인트"
+                "path": "/api/security-test/jwt-auth",
+                "description": "JWT 인증 테스트 (Bearer 토큰 필요)"
+            },
+            # 인증 API
+            {
+                "path": "/api/auth/login",
+                "description": "로그인 (인증 토큰 발급)"
             },
             {
-                "path": "/api/hello-auth",
-                "description": "인증이 필요한 Hello 엔드포인트 (Authorization: Bearer valid_token 헤더 필요)"
+                "path": "/api/auth/register",
+                "description": "회원가입"
+            },
+            # 보호된 API 
+            {
+                "path": "/api/protected/me",
+                "description": "인증된 사용자 정보 조회 (인증 필요)"
             },
             {
-                "path": "/api/error-test",
-                "description": "오류 핸들링 테스트 엔드포인트"
+                "path": "/api/protected/admin",
+                "description": "관리자 전용 API (ADMIN 역할 필요)"
             }
         ]
     }
@@ -157,21 +179,28 @@ async def health_check():
     status = {
         "status": "UP",
         "timestamp": datetime.datetime.now().isoformat(),
+        "version": settings.VERSION,
+        "environment": settings.ENV,
         "components": {
             "app": {"status": "UP"}
         }
     }
     
-    # DB 상태 확인 예시
-    # try:
-    #     await app.state.db.ping()
-    #     status["components"]["database"] = {"status": "UP"}
-    # except Exception as e:
-    #     status["status"] = "DOWN"
-    #     status["components"]["database"] = {
-    #         "status": "DOWN", 
-    #         "error": str(e)
-    #     }
+    # Redis 상태 확인
+    try:
+        redis = await RedisClient.get_client()
+        await redis.ping()
+        status["components"]["redis"] = {"status": "UP"}
+    except Exception as e:
+        status["components"]["redis"] = {
+            "status": "DOWN", 
+            "error": str(e)
+        }
+        # 중요 컴포넌트가 다운된 경우 전체 상태도 DOWN으로 설정
+        # status["status"] = "DOWN"
+    
+    # 다른 컴포넌트 상태 확인
+    # DB, 외부 API 등
     
     return status
 
@@ -180,24 +209,13 @@ if __name__ == "__main__":
     """
     메인 실행 함수
     - 직접 실행 시 Uvicorn ASGI 서버 시작
-    - FastAPI-Flow 프로젝트는 다음 세 가지 방식으로 실행 가능:
-    
-    1. Python 모듈로 직접 실행:
-       $ python -m app.main
-    
-    2. Uvicorn으로 실행 (개발):
-       $ uvicorn app.main:app --reload
-    
-    3. Gunicorn + UvicornWorker로 실행 (프로덕션):
-       $ gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 4
     """
     import uvicorn
     
     # 환경 변수에서 설정 로드 (또는 기본값 사용)
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-    reload = os.getenv("RELOAD", "True").lower() in ("true", "1", "t")
-    log_level = os.getenv("LOG_LEVEL", "info")
+    host = settings.HOST
+    port = settings.PORT
+    reload = settings.RELOAD
     
     logger.info(f"🚀 Uvicorn ASGI 서버 시작 중... (host={host}, port={port}, reload={reload})")
     
@@ -207,5 +225,5 @@ if __name__ == "__main__":
         host=host,
         port=port,
         reload=reload,
-        log_level=log_level
+        log_level="info"
     )

@@ -1,0 +1,29 @@
+# 도커 컴포즈 설정
+# 프로젝트에 필요한 인프라 서비스 구성
+version: "3.8"
+
+services:
+  # Redis 서비스 구성
+  redis:
+    image: redis:7.0-alpine
+    container_name: fastapi-flow-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redispassword
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redispassword", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis-data:
+
+networks:
+  app-network:
+    driver: bridge
